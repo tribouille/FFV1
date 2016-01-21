@@ -500,7 +500,7 @@ See [NUT](#references) for more information about elements.
 
 ## Frame
 
-|                                                        |
+|                                                   |    |
 |---------------------------------------------------|---:|
 |Frame( ) {                                         |type|
 |    keyframe                                       |  br|
@@ -512,7 +512,7 @@ See [NUT](#references) for more information about elements.
 
 ## Slice
 
-|                                                                    |
+|                                                            |       |
 |------------------------------------------------------------|:------|
 |Slice( i ) {                                                | type  |
 |    if( version \> 2 )                                      |       |
@@ -521,8 +521,10 @@ See [NUT](#references) for more information about elements.
 |        for( p = 0; p \< primary\_color\_count; p++ ) {     |       |
 |            Plane( p )                                      |       |
 |    } else if( colorspace\_type == 1 ) {                    |       |
+|        run_index = 0                                       |       |
 |        for( y = 0; y \< height; y++ )                      |       |
 |            for( p = 0; p \< primary\_color\_count; p++ ) { |       |
+|                run_index = 0                               |       |
 |                Line( p, y )                                |       |
 |    }                                                       |       |
 |    if( i \|\| version \> 2 )                               |       |
@@ -550,6 +552,250 @@ Note: this allows finding the start of slices before previous slices have been f
 **slice_crc_parity** 32 bits that are choosen so that the slice as a whole has a crc remainder of 0.
 This is equivalent to storing the crc remainder in the 32-bit parity.
 The CRC generator polynom used is the standard IEEE CRC polynom (0x104C11DB7) with initial value 0.
+
+## Plane
+
+|                                                            |       |
+|------------------------------------------------------------|:------|
+|Plane( p ) {                                                | type  |
+|    for( y = 0; y < slice_height; y++ ) {                   |       |
+|        run_index = 0                                       |       |
+|        Line( p, y )                                        |       |
+|    }                                                       |       |
+|}                                                           |       |
+
+**slice_height** is the current slice height
+
+## Line
+
+|                                                              |       |
+|--------------------------------------------------------------|:------|
+|Line( p ) {                                                   | type  |
+|    run_mode = 0                                              |       |
+|    run_count = 0                                             |       |
+|    plane_index = (p+1)/2                                     |       |
+|    for( x = 0; x < slice_width; x++ ) {                      |       |
+|        context = get_context( plane_index )                  |       |
+|        is_negative = false                                   |       |
+|        if( context < 0 ) {                                   |       |
+|            context = -context                                |       |
+|            is_negative = true                                |       |
+|        }                                                     |       |
+|        if( coder_type == 0 ) {                               |       |
+|            Symbol = adaptve_line()                           |       |
+|        } else {                                              |       |
+|            Symbol = range_coder_line( plane_index, context ) |       |
+|        }                                                     |       |
+|        if (is_negative) {                                    |       |
+|            Symbol = -Symbol                                  |       |
+|        }                                                     |       |
+|        line[x] = encode( x, line, top, Symbol )              |       |
+|    }                                                         |       |
+|}                                                             |       |
+
+**plane_index** is the current plane used
+
+**slice_width** is the current slice width
+
+**context** is the quantized sample difference, see [Context](#context)
+
+**line** is the current line
+
+**top** is the current top line
+
+## range_coder_line
+
+|                                           |    |
+|-------------------------------------------|---:|
+|range_coder_line( plane_index, context ) { |type|
+|    return Symbol                          | sr |
+|}                                          |    |
+
+**Symbol** is found in the state for the context of the plane given
+
+**state** refers to the default or custom state transition table of the Frame defined by the (Parameters)[#Parameters]
+
+## adaptive_line
+
+|                                                                             |      |
+|-----------------------------------------------------------------------------|-----:|
+|adaptive_line( plane_index, context ) {                                      | type |
+|    if( context == 0 && run_mode == 0 ) {                                    |      |
+|        run_mode = 1                                                         |      |
+|    if( run_mode == 1 )                                                      |      |
+|        return code_with_bias_correlation( get_vlc( plane_index, context ) ) |      |
+|    run_len_encoding()                                                       |      |
+|    run_count--                                                              |      |
+|    if( run_count < 0 ) {                                                    |      |
+|        run_mode = 0                                                         |      |
+|        run_count = 0                                                        |      |
+|        return code_with_bias_correlation( get_vlc( plane_index, context ) ) |      |
+|    } else                                                                   |      |
+|        return 0                                                             |      |
+|}                                                                            |      |
+
+## Run Length Encoding
+
+|                                                            |      |
+|------------------------------------------------------------|-----:|
+|run_len_encoding( plane_index, context ) {                  | type |
+|    if( run_count == 0 && run_mode == 1 ) {                 |      |
+|        Hit                                                 | u(1) |
+|        if( Hit ) {                                         |      |
+|            run_count = 1 << log2_run[run_index];           |      |
+|            if (x + run_count <= slice_width) {             |      |
+|                run_index++;                                |      |
+|            }                                               |      |
+|        } else {                                            |      |
+|            if( log2_run[run_index] ) {                     |      |
+|                run_count                                   | u(X) |
+|            } else {                                        |      |
+|                run_count = 0;                              |      |
+|            }                                               |      |
+|            if( run_index ) {                               |      |
+|                run_index--;                                |      |
+|            }                                               |      |
+|            run_mode = 2;                                   |      |
+|        }                                                   |      |
+|    }                                                       |      |
+|}                                                           |      |
+
+**X** corresponding to log2_run[run_index].
+
+## Variable Lenght Code context
+
+|                                              |      |
+|----------------------------------------------|-----:|
+|vlc_structure {                               | type |
+|    Count = 1                                 |      |
+|    ErrorSum = 4                              |      |
+|    Drift = 0                                 |      |
+|    Corection = 0                             |      |
+|}                                             |      |
+|                                              |      |
+|get_vlc ( plane_index, context ) {            | type |
+|    return vlc_contexts[plane_index][context] |      |
+|}                                             |      |
+
+Every contexts of every planes of every slice have its own VLC context.
+
+**Count** represents the number of time this context was Encountred
+
+**ErrorSum** is the accumulated sum of absolute corrected prediction residuals
+
+**Drift** is the accumulated sum of corrected prediction residuals
+
+**Correction** is Correction value
+
+## Bias correlation
+
+|                                                            |      |
+|------------------------------------------------------------|-----:|
+|code_with_bias_correlation( vlc ) {                         | type |
+|    k = 0                                                   |      |
+|    while( vlc.Count << k < vlc.ErrorSum ) {                |      |
+|        k++                                                 |      |
+|    }                                                       |      |
+|    Code = GolombRice( k )                                  |      |
+|    Code = ( Code >> 1 ) ^ -( Code \& 1 )                   |      |
+|    Code = Code ^ ( 2 * vlc.Drift + vlc.Count << 31 )       |      |
+|    vlc.Drift += Code                                       |      |
+|    vlc.ErrorSum += ABSOLUTE( Code )                        |      |
+|    Code += vlc.Correction                                  |      |
+|    update_bias_corelation_context( vlc )                   |      |
+|    Code = fold_with_bits( Code )                           |      |
+|    return Code                                             |      |
+|}                                                           |      |
+
+**k** is the coefficient used by the (Golomb Rice algorithm)[### Huffman coding mode]
+
+## Update Variable Lenght Code
+
+|                                                            |      |
+|------------------------------------------------------------|-----:|
+|update_bias_corelation_context( vlc ) {                     | type |
+|    if( vlc.Count == 128 ) {                                |      |
+|        vlc.Count >>= 1                                     |      |
+|        vlc.Drift >>= 1                                     |      |
+|        vlc.ErrorSum >>= 1                                  |      |
+|    }                                                       |      |
+|    vlc.Count++                                             |      |
+|    if( vlc.Drift <= -vlc.Count ) {                         |      |
+|        if( vlc.ErrorSum > -128 ) {                         |      |
+|             vlc.ErrorSum--                                 |      |
+|        }                                                   |      |
+|        vlc.Drift = vlc.Drift + vlc.Count                   |      |
+|        if( vlc.Drift <= -vlc.Count ) {                     |      |
+|            vlc.Drift = -vlc.Count + 1                      |      |
+|        }                                                   |      |
+|    } else if( vlc.Drift > 0 ) {                            |      |
+|        if( vlc.ErrorSum < 127 ) {                          |      |
+|             vlc.ErrorSum++                                 |      |
+|        }                                                   |      |
+|        vlc.Drift = vlc.Drift - vlc.Count                   |      |
+|        if( vlc.Drift > 0 ) {                               |      |
+|            vlc.Drift = 0                                   |      |
+|        }                                                   |      |
+|    }                                                       |      |
+|}                                                           |      |
+
+## Golomb Rice
+
+|                                                            |         |
+|------------------------------------------------------------|--------:|
+|GolombRice( k ) {                                           | type    |
+|    Len_0 = 0                                               |         |
+|    while( Len_0 < 11 ) {                                   |         |
+|        Prefix                                              | u(1)    |
+|        if( Prefix ) {                                      |         |
+|            break                                           |         |
+|        }                                                   |         |
+|        Len_0++                                             |         |
+|    }                                                       |         |
+|    if( Len_0 == 11 ) {                                     |         |
+|        return Code + 11                                    | u(bits) |
+|    }                                                       |         |
+|    Code                                                    |   u(k)  |
+|    Code = Code + Len_0 * k ^ 2                             |         |
+|    return Code                                             |         |
+|}                                                           |         |
+
+**bits** represents the bits\_per\_raw\_sample from the Parameters
+
+## Folding with bits
+
+|                                                            |      |
+|------------------------------------------------------------|-----:|
+|fold_with_bits( Code ) {                                    | type |
+|    TODO                                                    |      |
+|    return Code                                             |      |
+|}                                                           |      |
+
+**bits** represents the bits\_per\_raw\_sample from the Parameters
+
+## Encode difference
+
+|                                                             |      |
+|-------------------------------------------------------------|-----:|
+|encode( x, line, top, Symbol ) {                             | type |
+|    return ( predict( x, line, top) + Symbol) \&2 ^ bits - 1 |      |
+|}                                                            |      |
+
+**bits** represents the bits\_per\_raw\_sample from the Parameters
+
+## Predict
+
+|                                                                      |      |
+|----------------------------------------------------------------------|-----:|
+|predict( x, line, top ) {                                             | type |
+|    return median( line[x-1], top[x], line[x-1] + top[x] - top[x-1] ) |      |
+|}                                                                     |      |
+
+**x** is the current position in the line
+
+**line** is the current line
+
+**top** is the current top line
 
 ## Slice Header
 
